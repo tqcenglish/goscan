@@ -3,6 +3,7 @@
         "gomanuf",
         "gopacket",
         "goscan",
+        "iface",
         "pcap"
     ]
 }
