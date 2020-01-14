@@ -10,6 +10,11 @@ import (
 
 var iface string
 
+func init() {
+	log.SetLevel(log.DebugLevel)
+	log.SetReportCaller(true)
+}
+
 func main() {
 	// allow non root user to execute by compare with euid
 	if os.Geteuid() != 0 {

@@ -10,11 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
+
 	manuf "github.com/timest/gomanuf"
 )
-
-var log = logrus.New()
 
 // ipNet 存放 IP地址和子网掩码
 
