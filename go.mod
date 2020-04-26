@@ -1,4 +1,4 @@
-module goscan
+module github.com/tqcenglish/goscan
 
 go 1.14
 

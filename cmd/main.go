@@ -2,8 +2,9 @@ package main
 
 import (
 	"flag"
-	"goscan/internal"
 	"os"
+
+	"github.com/tqcenglish/goscan/internal"
 
 	log "github.com/sirupsen/logrus"
 )
