@@ -1,4 +1,4 @@
-package internal
+package scan
 
 import (
 	"context"
@@ -109,13 +109,14 @@ func setupNetInfo(f string) {
 		}
 	}
 	if err != nil {
-		log.Fatal("无法获取本地网络信息:", err)
+		log.Errorf("无法获取本地网络信息:", err)
 	}
 	for _, it := range ifs {
 		addr, _ := it.Addrs()
 		for _, a := range addr {
-			if ip, ok := a.(*net.IPNet); ok && !ip.IP.IsLoopback() {
-				if ip.IP.To4() != nil {
+			if ip, ok := a.(*net.IPNet); ok {
+				log.Infof("地址 %s %s", ip.IP, it.Name)
+				if !ip.IP.IsLoopback() && ip.IP.To4() != nil {
 					ipNet = ip
 					localHaddr = it.HardwareAddr
 					iface = it.Name
@@ -126,7 +127,7 @@ func setupNetInfo(f string) {
 	}
 END:
 	if ipNet == nil || len(localHaddr) == 0 {
-		log.Fatal("无法获取本地网络信息")
+		log.Errorf("无法获取本地网络信息")
 	}
 }
 

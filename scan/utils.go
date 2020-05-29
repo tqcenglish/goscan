@@ -1,4 +1,4 @@
-package internal
+package scan
 
 type Buffer struct {
     data  []byte

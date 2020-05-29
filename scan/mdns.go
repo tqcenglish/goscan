@@ -1,11 +1,11 @@
-package internal
+package scan
 
 import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"math/rand"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/google/gopacket"
@@ -14,13 +14,13 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-func listenNBNS(ctx context.Context) {
+func listenMDNS(ctx context.Context) {
 	handle, err := pcap.OpenLive(iface, 1024, false, 10*time.Second)
 	if err != nil {
-		log.Fatal("pcap打开失败:", err)
+		log.Errorf("pcap打开失败:", err)
 	}
 	defer handle.Close()
-	handle.SetBPFFilter("udp and port 137 and dst host " + ipNet.IP.String())
+	handle.SetBPFFilter("udp and port 5353")
 	ps := gopacket.NewPacketSource(handle, handle.LinkType())
 	for {
 		select {
@@ -29,7 +29,7 @@ func listenNBNS(ctx context.Context) {
 		case p := <-ps.Packets():
 			if len(p.Layers()) == 4 {
 				c := p.Layers()[3].LayerContents()
-				if len(c) > 8 && c[2] == 0x84 && c[3] == 0x00 && c[6] == 0x00 && c[7] == 0x01 {
+				if c[2] == 0x84 && c[3] == 0x00 && c[6] == 0x00 && c[7] == 0x01 {
 					// 从网络层(ipv4)拿IP, 不考虑IPv6
 					i := p.Layer(layers.LayerTypeIPv4)
 					if i == nil {
@@ -38,9 +38,9 @@ func listenNBNS(ctx context.Context) {
 					ipv4 := i.(*layers.IPv4)
 					ip := ipv4.SrcIP.String()
 					// 把 hostname 存入到数据库
-					m := ParseNBNS(c)
-					if len(m) > 0 {
-						pushData(ip, nil, m, "")
+					h := ParseMdns(c)
+					if len(h) > 0 {
+						pushData(ip, nil, h, "")
 					}
 				}
 			}
@@ -49,36 +49,41 @@ func listenNBNS(ctx context.Context) {
 }
 
 // 根据ip生成含mdns请求包，包存储在 buffer里
-func nbns(buffer *Buffer) {
-	rand.Seed(time.Now().UnixNano())
-	tid := rand.Intn(0x7fff)
+func mdns(buffer *Buffer, ip string) {
 	b := buffer.PrependBytes(12)
-	binary.BigEndian.PutUint16(b, uint16(tid))        // 0x0000 标识
-	binary.BigEndian.PutUint16(b[2:], uint16(0x0010)) // 标识
+	binary.BigEndian.PutUint16(b, uint16(0))          // 0x0000 标识
+	binary.BigEndian.PutUint16(b[2:], uint16(0x0100)) // 标识
 	binary.BigEndian.PutUint16(b[4:], uint16(1))      // 问题数
 	binary.BigEndian.PutUint16(b[6:], uint16(0))      // 资源数
 	binary.BigEndian.PutUint16(b[8:], uint16(0))      // 授权资源记录数
 	binary.BigEndian.PutUint16(b[10:], uint16(0))     // 额外资源记录数
 	// 查询问题
-	b = buffer.PrependBytes(1)
-	b[0] = 0x20
-	b = buffer.PrependBytes(32)
-	copy(b, []byte{0x43, 0x4b})
-	for i := 2; i < 32; i++ {
-		b[i] = 0x41
+	ipList := strings.Split(ip, ".")
+	for j := len(ipList) - 1; j >= 0; j-- {
+		ip := ipList[j]
+		b = buffer.PrependBytes(len(ip) + 1)
+		b[0] = uint8(len(ip))
+		for i := 0; i < len(ip); i++ {
+			b[i+1] = uint8(ip[i])
+		}
 	}
-
+	b = buffer.PrependBytes(8)
+	b[0] = 7 // 后续总字节
+	copy(b[1:], []byte{'i', 'n', '-', 'a', 'd', 'd', 'r'})
+	b = buffer.PrependBytes(5)
+	b[0] = 4 // 后续总字节
+	copy(b[1:], []byte{'a', 'r', 'p', 'a'})
 	b = buffer.PrependBytes(1)
 	// terminator
 	b[0] = 0
 	// type 和 classIn
 	b = buffer.PrependBytes(4)
-	binary.BigEndian.PutUint16(b, uint16(33))
+	binary.BigEndian.PutUint16(b, uint16(12))
 	binary.BigEndian.PutUint16(b[2:], 1)
 }
 
-//sendNBNS nbns
-func sendNBNS(ip IP, mhaddr net.HardwareAddr) {
+//sendMDNS 发送 mdns
+func sendMDNS(ip IP, mhaddr net.HardwareAddr) {
 	srcIP := net.ParseIP(ipNet.IP.String()).To4()
 	dstIP := net.ParseIP(ip.String()).To4()
 	ether := &layers.Ethernet{
@@ -96,14 +101,14 @@ func sendNBNS(ip IP, mhaddr net.HardwareAddr) {
 		DstIP:    dstIP,
 	}
 	bf := NewBuffer()
-	nbns(bf)
+	mdns(bf, ip.String())
 	udpPayload := bf.data
 	udp := &layers.UDP{
-		SrcPort: layers.UDPPort(61666),
-		DstPort: layers.UDPPort(137),
+		SrcPort: layers.UDPPort(60666),
+		DstPort: layers.UDPPort(5353),
 	}
 	udp.SetNetworkLayerForChecksum(ip4)
-	udp.Payload = udpPayload
+	udp.Payload = udpPayload // todo
 	buffer := gopacket.NewSerializeBuffer()
 	opt := gopacket.SerializeOptions{
 		FixLengths:       true, // 自动计算长度
@@ -111,39 +116,48 @@ func sendNBNS(ip IP, mhaddr net.HardwareAddr) {
 	}
 	err := gopacket.SerializeLayers(buffer, opt, ether, ip4, udp, gopacket.Payload(udpPayload))
 	if err != nil {
-		log.Fatal("Serialize layers出现问题:", err)
+		log.Errorf("Serialize layers出现问题:", err)
 	}
 	outgoingPacket := buffer.Bytes()
 
 	handle, err := pcap.OpenLive(iface, 1024, false, 10*time.Second)
 	if err != nil {
-		log.Fatal("pcap打开失败:", err)
+		log.Errorf("pcap打开失败:", err)
 	}
 	defer handle.Close()
 	err = handle.WritePacketData(outgoingPacket)
 	if err != nil {
-		log.Fatal("发送udp数据包失败..")
+		log.Errorf("发送udp数据包失败..")
 	}
 }
 
-//ParseNBNS 也是一个种常见的查看目标机器hostname的一种协议，和mDNS一样，传输层也是UDP，端口是在137。
-func ParseNBNS(data []byte) string {
+// ParseMdns 参数data  开头是 dns的协议头 0x0000 0x8400 0x0000 0x0001(ans) 0x0000 0x0000
+// 从 mdns响应报文中获取主机名
+func ParseMdns(data []byte) string {
 	var buf bytes.Buffer
-	i := bytes.Index(data, []byte{0x20, 0x43, 0x4b, 0x41, 0x41})
-	if i < 0 || len(data) < 32 {
+	i := bytes.Index(data, []byte{0x05, 0x6c, 0x6f, 0x63, 0x61, 0x6c, 0x00})
+	if i < 0 {
 		return ""
 	}
-	index := i + 1 + 0x20 + 12
-	// data[index-1]是在 number of names 的索引上，如果number of names 为0，退出
-	if data[index-1] == 0x00 {
-		return ""
-	}
-	for t := index; ; t++ {
-		// 0x20 和 0x00 是终止符
-		if data[t] == 0x20 || data[t] == 0x00 {
+
+	for s := i - 1; s > 1; s-- {
+		num := i - s
+		if s-2 < 0 {
 			break
 		}
-		buf.WriteByte(data[t])
+		// 包括 .local_ 7 个字符
+		if bto16([]byte{data[s-2], data[s-1]}) == uint16(num+7) {
+			return Reverse(buf.String())
+		}
+		buf.WriteByte(data[s])
 	}
-	return buf.String()
+
+	return ""
+}
+
+func bto16(b []byte) uint16 {
+	if len(b) != 2 {
+		log.Errorf("b只能是2个字节")
+	}
+	return uint16(b[0])<<8 + uint16(b[1])
 }
